@@ -2,9 +2,10 @@ import json
 import sys
 import os
 import io
-from contextlib import redirect_stdout, redirect_stderr
-import subprocess
 import traceback
+import tempfile
+import asyncio
+import subprocess
 from typing import Dict, List, Optional, Any
 import pkg_resources
 import site
@@ -12,6 +13,11 @@ import site
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+
+# Constants
+MAX_EXECUTION_TIME = 300  # seconds
+MAX_MEMORY = 256 * 1024 * 1024  # 256MB
+DEPENDENCY_PATH = "/mnt/deps"
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -28,9 +34,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Persistent directory for installed dependencies
-DEPENDENCY_PATH = "/mnt/deps"
 
 # Ensure dependencies are in the Python path
 os.environ["PYTHONPATH"] = DEPENDENCY_PATH
@@ -106,46 +109,123 @@ def install_dependencies(dependencies: List[str]) -> None:
             detail=f"Failed to install dependencies: {e.stderr}"
         )
 
-def execute_python_code(
+def prepare_user_code(code: str, input_vars: Optional[Dict] = None, output_vars: Optional[List] = None) -> str:
+    # Inject input variables from the dictionary into the user's code
+    input_vars_code = "\n".join([f"{key} = {repr(value)}" for key, value in (input_vars or {}).items()])
+    output_vars_condition = f"and not (k in {str(list((input_vars or {}).keys()))})" if not output_vars else f" and k in {str(output_vars)}"
+
+    # Wrap user code to capture print statements and extract variables
+    wrapped_code = """
+import json
+import sys
+import io
+from contextlib import redirect_stdout
+
+class EnhancedJSONEncoder(json.JSONEncoder):
+    def default(self, obj):
+        try:
+            return super().default(obj)
+        except TypeError:
+            if isinstance(obj, set):
+                return list(obj)
+            if isinstance(obj, complex):
+                return {'real': obj.real, 'imag': obj.imag}
+            if isinstance(obj, bytes):
+                return obj.hex()
+            return str(obj)
+"""
+    if input_vars_code:
+        wrapped_code += "\n# Input variables\n"
+        wrapped_code += input_vars_code
+
+    wrapped_code += """
+# Buffer for debug messages
+debug_output = io.StringIO()
+
+try:
+    with redirect_stdout(debug_output):
+"""
+    # Indent user code
+    for line in code.split("\n"):
+        wrapped_code += f"        {line}\n"
+
+    wrapped_code += """
+    # Filter variables
+    variables = {k: v for k, v in locals().items() if not k.startswith('__') and not callable(v) """
+    wrapped_code += output_vars_condition
+    wrapped_code += " }\n"
+    wrapped_code += """
+    output = {
+        'vars': variables,
+        'debug': debug_output.getvalue()
+    }
+    print(json.dumps(output, cls=EnhancedJSONEncoder))
+except Exception as e:
+    print(json.dumps({'error': str(e)}), file=sys.stderr)
+"""
+    return wrapped_code
+
+async def execute_python_code(
     code: str,
     input_vars: Optional[Dict[str, Any]] = None,
     output_vars: Optional[List[str]] = None
 ) -> Dict[str, Any]:
-    """Execute Python code dynamically and return the results."""
-    exec_globals = {}
-    exec_locals = {}
-
-    # Inject input variables
-    if input_vars:
-        exec_globals.update(input_vars)
-
     try:
-        with io.StringIO() as output_buffer, io.StringIO() as error_buffer:
-            with redirect_stdout(output_buffer), redirect_stderr(error_buffer):
-                exec(code, exec_globals, exec_locals)
+        # Add resource limits
+        resource_limit_code = f"""
+import resource
+resource.setrlimit(resource.RLIMIT_CPU, ({MAX_EXECUTION_TIME}, {MAX_EXECUTION_TIME}))
+resource.setrlimit(resource.RLIMIT_AS, ({MAX_MEMORY}, {MAX_MEMORY}))
+"""
+        full_code = resource_limit_code + "\n" + prepare_user_code(code, input_vars, output_vars)
 
-                # Extract required output variables
-                if output_vars:
-                    vars_dict = {k: v for k, v in exec_locals.items() if k in output_vars}
-                else:
-                    vars_dict = {k: v for k, v in exec_locals.items() 
-                                if not k.startswith('__') and not callable(v)}
-                    if input_vars:
-                        vars_dict = {k: v for k, v in vars_dict.items() 
-                                   if k not in input_vars}
+        # Create temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.py') as tmp_file:
+            tmp_file.write(full_code.encode('utf-8'))
+            tmp_file_name = tmp_file.name
 
+        try:
+            # Execute as subprocess
+            result = subprocess.run(
+                ['python3', tmp_file_name],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=MAX_EXECUTION_TIME,
+                text=True
+            )
+
+            # Clean up
+            os.remove(tmp_file_name)
+
+            stripped_stdout = result.stdout.strip() if result.stdout else None
+            stripped_stderr = result.stderr.strip() if result.stderr else None
+
+            if result.returncode == 0 and stripped_stdout:
+                return {'result': json.loads(stripped_stdout), 'error': None}
+            else:
+                try:
+                    error_dict = json.loads(stripped_stderr)
+                except Exception:
+                    error_dict = None
                 return {
-                    "result": {
-                        "vars": vars_dict,
-                        "debug": output_buffer.getvalue()
-                    },
-                    "error": None
+                    'result': None,
+                    'error': 'Execution Error',
+                    'details': error_dict['error'] if error_dict else stripped_stderr
                 }
+
+        except subprocess.TimeoutExpired:
+            os.remove(tmp_file_name)
+            return {
+                'result': None,
+                'error': 'Execution Error',
+                'details': 'Execution time limit exceeded'
+            }
+
     except Exception as e:
         return {
-            "result": None,
-            "error": "Execution Error",
-            "details": traceback.format_exc()
+            'result': None,
+            'error': 'Execution Error',
+            'details': traceback.format_exc()
         }
 
 @app.post("/execute", response_model=ExecuteResponse)
@@ -155,28 +235,29 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
         raise HTTPException(status_code=400, detail="No code provided")
 
     # Install missing dependencies
-    try:
-        install_dependencies(request.dependencies)
-    except Exception as e:
-        return {
-            "result": None,
-            "error": "Dependency Error",
-            "details": str(e)
-        }
+    if request.dependencies:
+        try:
+            install_dependencies(request.dependencies)
+        except Exception as e:
+            return {
+                'result': None,
+                'error': 'Dependency Error',
+                'details': str(e)
+            }
 
     # Execute user-provided Python code
-    result = execute_python_code(
+    result = await execute_python_code(
         request.code,
         request.input_vars,
         request.output_vars
     )
 
-    if result.get("error"):
+    if result.get('error'):
         raise HTTPException(
             status_code=400,
             detail={
-                "error": result["error"],
-                "details": result["details"]
+                'error': result['error'],
+                'details': result['details']
             }
         )
 
