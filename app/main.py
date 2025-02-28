@@ -52,23 +52,26 @@ def install_dependencies(dependencies: List[str]) -> None:
     if not dependencies:
         return
     
-    # Check which dependencies are already installed
-    installed = os.listdir(DEPENDENCY_PATH)
-    missing = [dep for dep in dependencies if dep not in installed]
-
-    if missing:
-        try:
-            subprocess.run(
-                [sys.executable, "-m", "pip", "install", "--target", DEPENDENCY_PATH, *missing],
-                check=True,
-                capture_output=True,
-                text=True
-            )
-        except subprocess.CalledProcessError as e:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Failed to install dependencies: {e.stderr}"
-            )
+    try:
+        print(f"Installing dependencies: {dependencies}")  # Debug log
+        result = subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--target", DEPENDENCY_PATH, *dependencies],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+        print(f"Installation output: {result.stdout}")  # Debug log
+        print(f"Installation errors: {result.stderr}")  # Debug log
+        
+        if DEPENDENCY_PATH not in sys.path:
+            sys.path.append(DEPENDENCY_PATH)
+            print(f"Added {DEPENDENCY_PATH} to sys.path")  # Debug log
+            
+    except subprocess.CalledProcessError as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to install dependencies: {e.stderr}"
+        )
 
 def execute_python_code(
     code: str,
@@ -114,7 +117,10 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
         raise HTTPException(status_code=400, detail="No code provided")
 
     # Install missing dependencies
-    install_dependencies(request.dependencies)
+    try:
+        install_dependencies(request.dependencies)
+    except Exception as e:
+        return ExecuteResponse(error=f"Failed to install dependencies: {str(e)}")
 
     # Execute user-provided Python code
     result = execute_python_code(
