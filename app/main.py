@@ -45,9 +45,9 @@ class ExecuteRequest(BaseModel):
     dependencies: Optional[List[str]] = []
 
 class ExecuteResponse(BaseModel):
-    result: Optional[str] = None
-    debug: Optional[str] = None
+    result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+    details: Optional[str] = None
 
 def get_installed_packages() -> set:
     """Get a set of all installed packages across all paths."""
@@ -110,7 +110,7 @@ def execute_python_code(
     code: str,
     input_vars: Optional[Dict[str, Any]] = None,
     output_vars: Optional[List[str]] = None
-) -> Dict[str, str]:
+) -> Dict[str, Any]:
     """Execute Python code dynamically and return the results."""
     exec_globals = {}
     exec_locals = {}
@@ -124,28 +124,33 @@ def execute_python_code(
             with redirect_stdout(output_buffer), redirect_stderr(error_buffer):
                 exec(code, exec_globals, exec_locals)
 
-                # Extract only required output variables
-                output_vars_dict = {k: v for k, v in exec_locals.items()
-                                  if not output_vars or k in output_vars}
+                # Extract required output variables
+                if output_vars:
+                    vars_dict = {k: v for k, v in exec_locals.items() if k in output_vars}
+                else:
+                    vars_dict = {k: v for k, v in exec_locals.items() 
+                                if not k.startswith('__') and not callable(v)}
+                    if input_vars:
+                        vars_dict = {k: v for k, v in vars_dict.items() 
+                                   if k not in input_vars}
 
                 return {
-                    "result": json.dumps(output_vars_dict),
-                    "debug": output_buffer.getvalue(),
-                    "error": error_buffer.getvalue()
+                    "result": {
+                        "vars": vars_dict,
+                        "debug": output_buffer.getvalue()
+                    },
+                    "error": None
                 }
     except Exception as e:
-        return {"error": traceback.format_exc()}
+        return {
+            "result": None,
+            "error": "Execution Error",
+            "details": traceback.format_exc()
+        }
 
 @app.post("/execute", response_model=ExecuteResponse)
 async def execute(request: ExecuteRequest) -> ExecuteResponse:
-    """
-    Execute Python code with optional dependencies and input/output variables.
-    
-    - code: The Python code to execute
-    - input_vars: Dictionary of variables to inject into the execution context
-    - output_vars: List of variable names to extract from the execution context
-    - dependencies: List of Python packages to install before execution
-    """
+    """Execute Python code with optional dependencies and input/output variables."""
     if not request.code:
         raise HTTPException(status_code=400, detail="No code provided")
 
@@ -153,7 +158,11 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
     try:
         install_dependencies(request.dependencies)
     except Exception as e:
-        return ExecuteResponse(error=f"Failed to install dependencies: {str(e)}")
+        return {
+            "result": None,
+            "error": "Dependency Error",
+            "details": str(e)
+        }
 
     # Execute user-provided Python code
     result = execute_python_code(
@@ -162,7 +171,16 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
         request.output_vars
     )
 
-    return ExecuteResponse(**result)
+    if result.get("error"):
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": result["error"],
+                "details": result["details"]
+            }
+        )
+
+    return result
 
 if __name__ == "__main__":
     import uvicorn
