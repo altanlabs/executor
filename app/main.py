@@ -6,6 +6,8 @@ from contextlib import redirect_stdout, redirect_stderr
 import subprocess
 import traceback
 from typing import Dict, List, Optional, Any
+import pkg_resources
+import site
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -47,25 +49,56 @@ class ExecuteResponse(BaseModel):
     debug: Optional[str] = None
     error: Optional[str] = None
 
+def get_installed_packages() -> set:
+    """Get a set of all installed packages across all paths."""
+    installed_packages = {pkg.key for pkg in pkg_resources.working_set}
+    
+    # Add packages from our custom path if it exists
+    if os.path.exists(DEPENDENCY_PATH):
+        site.addsitedir(DEPENDENCY_PATH)
+        installed_packages.update(
+            {pkg.key for pkg in pkg_resources.find_distributions(DEPENDENCY_PATH)}
+        )
+    return installed_packages
+
+# Cache for installed packages
+_installed_packages = None
+
 def install_dependencies(dependencies: List[str]) -> None:
     """Install Python dependencies if they're not already installed."""
     if not dependencies:
         return
+        
+    global _installed_packages
     
+    # Initialize cache if needed
+    if _installed_packages is None:
+        _installed_packages = get_installed_packages()
+    
+    # Normalize package names (convert to lowercase)
+    missing_deps = [
+        dep for dep in dependencies 
+        if dep.lower() not in _installed_packages
+    ]
+    
+    if not missing_deps:
+        print("All dependencies already installed")
+        return
+        
     try:
-        print(f"Installing dependencies: {dependencies}")  # Debug log
+        print(f"Installing missing dependencies: {missing_deps}")
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--target", DEPENDENCY_PATH, *dependencies],
+            [sys.executable, "-m", "pip", "install", "--target", DEPENDENCY_PATH, *missing_deps],
             check=True,
             capture_output=True,
             text=True
         )
-        print(f"Installation output: {result.stdout}")  # Debug log
-        print(f"Installation errors: {result.stderr}")  # Debug log
+        
+        # Update the cache with new packages
+        _installed_packages.update(pkg.lower() for pkg in missing_deps)
         
         if DEPENDENCY_PATH not in sys.path:
             sys.path.append(DEPENDENCY_PATH)
-            print(f"Added {DEPENDENCY_PATH} to sys.path")  # Debug log
             
     except subprocess.CalledProcessError as e:
         raise HTTPException(
