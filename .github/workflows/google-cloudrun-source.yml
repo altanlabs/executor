@@ -32,7 +32,8 @@ name: 'Deploy to Cloud Run from Source'
 on:
   push:
     branches:
-      - '"main"'
+      - main  # Remove the extra quotes
+  workflow_dispatch:  # Add a colon
 
 env:
   PROJECT_ID: 'illuminator-optimai' # TODO: update to your Google Cloud project ID
