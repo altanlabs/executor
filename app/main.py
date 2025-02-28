@@ -28,7 +28,7 @@ app.add_middleware(
 )
 
 # Persistent directory for installed dependencies
-DEPENDENCY_PATH = "/tmp/deps"
+DEPENDENCY_PATH = "/mnt/deps"
 
 # Ensure dependencies are in the Python path
 os.environ["PYTHONPATH"] = DEPENDENCY_PATH
