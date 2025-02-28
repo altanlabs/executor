@@ -1,0 +1,37 @@
+{
+    "family": "python-runner",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": [
+        "FARGATE"
+    ],
+    "cpu": "256",
+    "memory": "512",
+    "executionRoleArn": "arn:aws:iam::522814712487:role/ecsTaskExecutionRole",
+    "containerDefinitions": [
+        {
+            "name": "python-runner",
+            "image": "522814712487.dkr.ecr.eu-north-1.amazonaws.com/python-runner:latest",
+            "essential": true,
+            "portMappings": [
+                {
+                    "containerPort": 8080,
+                    "protocol": "tcp"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "PYTHONPATH",
+                    "value": "/app/deps"
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/python-runner",
+                    "awslogs-region": "eu-north-1",
+                    "awslogs-stream-prefix": "ecs"
+                }
+            }
+        }
+    ]
+} 
