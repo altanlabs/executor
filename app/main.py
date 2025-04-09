@@ -2,8 +2,6 @@ import json
 import logging
 import sys
 import os
-import io
-from threading import Lock
 import traceback
 import tempfile
 import asyncio
@@ -15,18 +13,21 @@ import site
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+# Imports the Cloud Logging client library
+import google.cloud.logging
+
+# Instantiates a client
+client = google.cloud.logging.Client()
+
+# Retrieves a Cloud Logging handler based on the environment
+# you're running in and integrates the handler with the
+# Python logging module. By default this captures all logs
+# at INFO level and higher
+client.setup_logging(log_level=logging.DEBUG)
+# import io
+# from threading import Lock
 
 
-# Configure logger
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # Or INFO in production
-
-# Make sure you have a handler if running standalone
-if not logger.handlers:
-    stream_handler = logging.StreamHandler()
-    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
 
 # Constants
 MAX_EXECUTION_TIME = 300  # seconds
@@ -38,7 +39,7 @@ MAX_INSTALL_RETRIES = 2
 
 # Global dependency cache and a threading lock for thread safety.
 _installed_packages: Set[str] = None
-_installed_packages_lock = Lock()
+# _installed_packages_lock = Lock()
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -92,12 +93,12 @@ async def get_installed_packages_async() -> Set[str]:
         Exception: If there's an error accessing pkg_resources or the custom path.
     """
     try:
-        logger.debug("Gathering installed packages from default environment via pkg_resources.")
+        logging.debug("Gathering installed packages from default environment via pkg_resources.")
         base_installed = await asyncio.to_thread(
             lambda: {pkg.key.lower() for pkg in pkg_resources.working_set}
         )
     except Exception as exc:
-        logger.error("Error accessing pkg_resources.working_set", exc_info=True)
+        logging.error("Error accessing pkg_resources.working_set", exc_info=True)
         raise exc
 
     combined_installed = set(base_installed)
@@ -105,7 +106,7 @@ async def get_installed_packages_async() -> Set[str]:
     # Safely check our custom path
     try:
         if os.path.exists(DEPENDENCY_PATH):
-            logger.debug("Custom dependency path '%s' exists. Gathering distributions.", DEPENDENCY_PATH)
+            logging.debug("Custom dependency path '%s' exists. Gathering distributions.", DEPENDENCY_PATH)
             # Add path and gather packages asynchronously
             await asyncio.to_thread(site.addsitedir, DEPENDENCY_PATH)
             custom_installed = await asyncio.to_thread(
@@ -113,12 +114,12 @@ async def get_installed_packages_async() -> Set[str]:
             )
             combined_installed.update(custom_installed)
         else:
-            logger.debug("Custom dependency path '%s' does not exist; skipping custom packages.", DEPENDENCY_PATH)
+            logging.debug("Custom dependency path '%s' does not exist; skipping custom packages.", DEPENDENCY_PATH)
     except Exception as exc:
-        logger.error("Error processing custom dependency path.", exc_info=True)
+        logging.error("Error processing custom dependency path.", exc_info=True)
         raise exc
 
-    logger.debug("Total installed packages found: %d", len(combined_installed))
+    logging.debug("Total installed packages found: %d", len(combined_installed))
     return combined_installed
 
 
@@ -138,7 +139,7 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
         HTTPException: If the installation fails or times out, or if the user must consult server logs.
     """
     command = [sys.executable, "-m", "pip", "install", "--target", DEPENDENCY_PATH, *packages]
-    logger.info("Attempt [%d] - Executing pip install command: %s", attempt, ' '.join(command))
+    logging.info("Attempt [%d] - Executing pip install command: %s", attempt, ' '.join(command))
 
     # We'll open a subprocess asynchronously
     try:
@@ -156,11 +157,10 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
             # kill the process to avoid orphaned children
             process.kill()
             await process.communicate()
-            logger.error("Timeout during pip install execution on attempt [%d].", attempt, exc_info=True)
+            logging.error("Timeout during pip install execution on attempt [%d].", attempt, exc_info=True)
             raise HTTPException(
                 status_code=408,
                 detail={
-                    'result': None,
                     'error': 'Dependency Installation Timeout',
                     'details': "Installation timed out. Check server logs for further diagnostics."
                 }
@@ -170,12 +170,12 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
         out_str = stdout.decode().strip()
         err_str = stderr.decode().strip()
 
-        logger.debug("pip install stdout (attempt [%d]):\n%s", attempt, out_str)
-        logger.debug("pip install stderr (attempt [%d]):\n%s", attempt, err_str or "(none)")
+        logging.debug("pip install stdout (attempt [%d]):\n%s", attempt, out_str)
+        logging.debug("pip install stderr (attempt [%d]):\n%s", attempt, err_str or "(none)")
 
         # If the return code is non-zero, we might need to retry or fail.
         if process.returncode != 0:
-            logger.error(
+            logging.error(
                 "pip install command failed (attempt [%d]). Return Code: %s | Stdout: %s | Stderr: %s",
                 attempt, process.returncode, out_str, err_str,
                 exc_info=True
@@ -193,25 +193,23 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
     except subprocess.CalledProcessError as cpe:
         # If we haven't exceeded max retries, we can retry
         if attempt < MAX_INSTALL_RETRIES:
-            logger.warning("Retrying pip install (attempt [%d -> %d]) for packages: %s", attempt, attempt + 1, packages)
+            logging.warning("Retrying pip install (attempt [%d -> %d]) for packages: %s", attempt, attempt + 1, packages)
             await run_pip_install_async(packages, attempt=attempt + 1)
         else:
-            logger.error("Max install retries reached. Failing out.")
+            logging.error("Max install retries reached. Failing out.")
             raise HTTPException(
                 status_code=400,
                 detail={
-                    'result': None,
                     'error': 'Dependency Installation Error',
                     'details': "Repeated pip errors during installation. Check server logs for specifics."
                 }
             )
     except Exception as exc:
         tb = traceback.format_exc()
-        logger.critical("Unexpected error in run_pip_install_async (attempt [%d]): %s", attempt, tb)
+        logging.critical("Unexpected error in run_pip_install_async (attempt [%d]): %s", attempt, tb)
         raise HTTPException(
             status_code=500,
             detail={
-                'result': None,
                 'error': 'Unexpected Dependency Installation Error',
                 'details': "An unexpected error occurred during installation. Check server logs for traceback."
             }
@@ -237,31 +235,29 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
     Raises:
         HTTPException: On any error (with sanitized messages for the client).
     """
-    logger.debug("START: Async dependency installation process. Input: %s", dependencies)
+    logging.debug("START: Async dependency installation process. Input: %s", dependencies)
 
     # Validate input strictly
     if not isinstance(dependencies, list) or not all(isinstance(dep, str) and dep.strip() for dep in dependencies):
-        logger.error("Invalid dependencies input. Must be a list of non-empty strings.")
+        logging.error("Invalid dependencies input. Must be a list of non-empty strings.")
         raise HTTPException(
             status_code=400,
             detail={
-                'result': None,
                 'error': 'Invalid Dependency Input',
                 'details': "Dependencies must be a list of non-empty strings."
             }
         )
 
     if not dependencies:
-        logger.warning("No dependencies provided; skipping installation.")
+        logging.warning("No dependencies provided; skipping installation.")
         return
 
     # Ensure the dependency path is valid
     if not os.path.isdir(DEPENDENCY_PATH):
-        logger.error("Dependency path '%s' is not a valid directory or does not exist.", DEPENDENCY_PATH)
+        logging.error("Dependency path '%s' is not a valid directory or does not exist.", DEPENDENCY_PATH)
         raise HTTPException(
             status_code=500,
             detail={
-                'result': None,
                 'error': 'Invalid Dependency Path',
                 'details': f"Configured dependency path '{DEPENDENCY_PATH}' is invalid. Check server config."
             }
@@ -272,14 +268,13 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
     try:
         async with asyncio.Lock():
             if _installed_packages is None:
-                logger.debug("Initializing the global installed packages cache asynchronously.")
+                logging.debug("Initializing the global installed packages cache asynchronously.")
                 _installed_packages = await get_installed_packages_async()
     except Exception as exc:
-        logger.error("Cache initialization error", exc_info=True)
+        logging.error("Cache initialization error", exc_info=True)
         raise HTTPException(
             status_code=500,
             detail={
-                'result': None,
                 'error': 'Cache Initialization Error',
                 'details': "Error initializing package cache. Check server logs."
             }
@@ -290,10 +285,10 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
     missing = [dep for dep in dependencies if dep.lower() not in lower_installed]
 
     if not missing:
-        logger.info("All dependencies are already installed; nothing to do.")
+        logging.info("All dependencies are already installed; nothing to do.")
         return
 
-    logger.info("Missing dependencies: %s", missing)
+    logging.info("Missing dependencies: %s", missing)
 
     # Install the missing dependencies asynchronously (with retries if needed).
     await run_pip_install_async(missing)
@@ -305,9 +300,9 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
     # Ensure that the newly installed packages are in sys.path
     if DEPENDENCY_PATH not in sys.path:
         sys.path.append(DEPENDENCY_PATH)
-        logger.debug("Appended dependency path '%s' to sys.path.", DEPENDENCY_PATH)
+        logging.debug("Appended dependency path '%s' to sys.path.", DEPENDENCY_PATH)
 
-    logger.info("Successfully installed dependencies: %s", missing)
+    logging.info("Successfully installed dependencies: %s", missing)
 
 
 def prepare_user_code(code: str, input_vars: Optional[Dict] = None, output_vars: Optional[List] = None) -> str:
@@ -437,14 +432,7 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
 
     # Install missing dependencies
     if request.dependencies:
-        try:
-            await install_dependencies_async(request.dependencies)
-        except Exception as e:
-            return {
-                'result': None,
-                'error': 'Dependency Error',
-                'details': str(e)
-            }
+        await install_dependencies_async(request.dependencies)
 
     # Execute user-provided Python code
     result = await execute_python_code(
