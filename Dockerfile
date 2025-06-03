@@ -13,13 +13,20 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Chrome WebDriver
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d. -f1) \
-    && CHROME_DRIVER_VERSION=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_${CHROME_VERSION}") \
-    && wget -q "https://chromedriver.storage.googleapis.com/${CHROME_DRIVER_VERSION}/chromedriver_linux64.zip" \
+RUN CHROME_MAJOR_VERSION=$(google-chrome --version | sed 's/Google Chrome //g' | sed 's/ *//g' | cut -d '.' -f 1) \
+    && echo "Chrome version: $CHROME_MAJOR_VERSION" \
+    && LATEST_DRIVER=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_MAJOR_VERSION") \
+    && echo "Latest driver: $LATEST_DRIVER" \
+    && if [ -z "$LATEST_DRIVER" ]; then \
+         # If specific version doesn't work, try to get the latest ChromeDriver \
+         LATEST_DRIVER=$(curl -s "https://chromedriver.storage.googleapis.com/LATEST_RELEASE"); \
+       fi \
+    && wget -q "https://chromedriver.storage.googleapis.com/$LATEST_DRIVER/chromedriver_linux64.zip" \
     && unzip chromedriver_linux64.zip \
     && mv chromedriver /usr/bin/chromedriver \
     && chmod +x /usr/bin/chromedriver \
     && rm chromedriver_linux64.zip
+
     
 # Set working directory
 WORKDIR /app
