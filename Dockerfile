@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     unzip \
     curl \
     ffmpeg \
+    libicu72 \
     # Common runtime libs for Chrome/Selenium
     libglib2.0-0 \
     libnss3 \
