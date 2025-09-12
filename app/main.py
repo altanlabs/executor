@@ -600,6 +600,7 @@ resource.setrlimit(resource.RLIMIT_AS, ({MAX_MEMORY}, {MAX_MEMORY}))
             "result": None,
             "error": "Execution Error",
             "details": traceback.format_exc(),
+            "code": code,
         }
 
 
