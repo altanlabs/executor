@@ -496,6 +496,9 @@ def extract_imports(code: str):
     Returns:
         set[str]: A set of imported module names.
     """
+
+    code = code if "\n" in code else code.replace("\\n", "\n")
+    
     imports = set()
 
     try:
