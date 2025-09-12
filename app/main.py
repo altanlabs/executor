@@ -633,7 +633,7 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
     if result.get("error"):
         raise HTTPException(
             status_code=400,
-            detail={"error": result["error"], "details": result["details"]},
+            detail={"error": result["error"], "details": result["details"], "code": request.code},
         )
 
     return result
