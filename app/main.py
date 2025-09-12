@@ -486,33 +486,48 @@ except Exception as e:
     return wrapped_code
 
 
+def normalize_code(s: str) -> str:
+    """
+    Unwraps if the entire payload is a single quoted string (e.g. "import os\\n..."),
+    then converts literal backslash-newlines to real newlines.
+    """
+    t = s.strip()
+
+    # If it looks like a single Python string literal, try to evaluate it safely
+    if (
+        t.startswith(("'", '"', 'r"', "r'", 'u"', "u'", 'b"', "b'"))
+        and t.endswith(t[0])  # same quote char
+        and "\n" not in t[:1]
+    ):  # trivial guard; not strictly necessary
+        try:
+            # ast.literal_eval will turn "import os\\nimport sys" into 'import os\nimport sys'
+            t = ast.literal_eval(t)
+        except Exception:
+            pass  # fall back to original
+
+    # Convert literal backslash sequences to real newlines
+    t = t.replace("\\r\\n", "\n").replace("\\r", "\n").replace("\\n", "\n")
+
+    return t
+
+
 def extract_imports(code: str):
     """
-    Parse Python code and extract all imported libraries/modules.
-
-    Args:
-        code (str): A string containing Python source code.
-
-    Returns:
-        set[str]: A set of imported module names.
+    Parse Python code and extract imported top-level modules.
+    Works for `import ...` and `from ... import ...`.
     """
-
-    code = code if "\n" in code else code.replace("\\n", "\n")
-    
     imports = set()
+    code = normalize_code(code)
 
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        return imports  # Return empty if code is invalid
+        return imports  # invalid code
 
     for node in ast.walk(tree):
-        # Handle `import module`
         if isinstance(node, ast.Import):
             for alias in node.names:
-                imports.add(alias.name.split(".")[0])  # only top-level module
-
-        # Handle `from module import ...`
+                imports.add(alias.name.split(".")[0])
         elif isinstance(node, ast.ImportFrom):
             if node.module:
                 imports.add(node.module.split(".")[0])
