@@ -215,6 +215,7 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
                 detail={
                     "error": "Security Violation",
                     "details": f"Library '{package}' is not allowed for security reasons.",
+                    "debug": "TEST MESSAGE"
                 },
             )
 
@@ -258,6 +259,7 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
                 detail={
                     "error": "Dependency Installation Timeout",
                     "details": "Installation timed out. Check server logs for further diagnostics.",
+                    "debug": "TEST MESSAGE"
                 },
             )
 
@@ -304,6 +306,7 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
                 detail={
                     "error": "Dependency Installation Error",
                     "details": "Repeated pip errors during installation. Check server logs for specifics.",
+                    "debug": "TEST MESSAGE"
                 },
             )
     except Exception as exc:
@@ -316,6 +319,7 @@ async def run_pip_install_async(packages: List[str], attempt: int = 1) -> None:
             detail={
                 "error": "Unexpected Dependency Installation Error",
                 "details": "An unexpected error occurred during installation. Check server logs for traceback.",
+                "debug": "TEST MESSAGE",
             },
         )
 
@@ -356,6 +360,7 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
             detail={
                 "error": "Invalid Dependency Input",
                 "details": "Dependencies must be a list of non-empty strings.",
+                "debug": "TEST MESSAGE"
             },
         )
 
@@ -374,6 +379,7 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
             detail={
                 "error": "Invalid Dependency Path",
                 "details": f"Configured dependency path '{DEPENDENCY_PATH}' is invalid. Check server config.",
+                "debug": "TEST MESSAGE"
             },
         )
 
@@ -393,6 +399,7 @@ async def install_dependencies_async(dependencies: List[str]) -> None:
             detail={
                 "error": "Cache Initialization Error",
                 "details": "Error initializing package cache. Check server logs.",
+                "debug": "TEST MESSAGE"
             },
         )
 
@@ -493,19 +500,16 @@ def normalize_code(s: str) -> str:
     """
     t = s.strip()
 
-    # If it looks like a single Python string literal, try to evaluate it safely
     if (
         t.startswith(("'", '"', 'r"', "r'", 'u"', "u'", 'b"', "b'"))
-        and t.endswith(t[0])  # same quote char
+        and t.endswith(t[0])
         and "\n" not in t[:1]
-    ):  # trivial guard; not strictly necessary
+    ):
         try:
-            # ast.literal_eval will turn "import os\\nimport sys" into 'import os\nimport sys'
             t = ast.literal_eval(t)
         except Exception:
-            pass  # fall back to original
+            pass
 
-    # Convert literal backslash sequences to real newlines
     t = t.replace("\\r\\n", "\n").replace("\\r", "\n").replace("\\n", "\n")
 
     return t
@@ -601,6 +605,7 @@ resource.setrlimit(resource.RLIMIT_AS, ({MAX_MEMORY}, {MAX_MEMORY}))
             "error": "Execution Error",
             "details": traceback.format_exc(),
             "code": code,
+            "debug": "TEST MESSAGE",
         }
 
 
@@ -623,6 +628,7 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
                 detail={
                     "error": "Security Violation",
                     "details": f"Library '{lib}' is not allowed for security reasons.",
+                    "debug": "TEST MESSAGE",
                 },
             )
 
@@ -634,7 +640,11 @@ async def execute(request: ExecuteRequest) -> ExecuteResponse:
     if result.get("error"):
         raise HTTPException(
             status_code=400,
-            detail={"error": result["error"], "details": result["details"], "code": request.code},
+            detail={
+                "error": result["error"],
+                "details": result["details"],
+                "debug": "TEST MESSAGE",
+            },
         )
 
     return result
